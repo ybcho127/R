@@ -1,0 +1,641 @@
+---
+title: "Peer Assessment II"
+output:
+  html_document: 
+    pandoc_args: [
+      "--number-sections",
+    ]
+---
+
+
+
+
+# Background
+
+As a statistical consultant working for a real estate investment firm, your task is to develop a model to predict the selling price of a given home in Ames, Iowa. Your employer hopes to use this information to help assess whether the asking price of a house is higher or lower than the true value of the house. If the home is undervalued, it may be a good investment for the firm.
+
+# Training Data and relevant packages
+
+In order to better assess the quality of the model you will produce, the data have been randomly divided into three separate pieces: a training data set, a testing data set, and a validation data set. For now we will load the training data set, the others will be loaded and used later.
+
+```{r load, message = FALSE}
+load("ames_train.Rdata")
+```
+
+Use the code block below to load any necessary packages
+
+```{r}
+library(devtools)
+library(dplyr)
+library(statsr)
+library(MASS)
+library(BAS)
+library(grid)
+library(gridExtra)
+library(ggplot2)
+library(tidyr)
+```
+
+## Part 1 - Exploratory Data Analysis (EDA)
+
+
+A detailed EDA of the ames_train data set, to learn about the structure of the data and the relationships between the variables in the data set is crucial. I'll start from looking at the types of the data, see if there's anything interesting or should be changed, then dive into the plotting and looking into the variables.
+
+* * *
+```{r}
+str(ames_train)
+```
+```{r}
+str(select_if(ames_train, is.numeric))
+```
+```{r}
+summary(select_if(ames_train, is.numeric))
+```
+Looking at the integer variables, there are some variables(Overall.Qual, and Overall.Cond) which shouldn't be categorized as integer but categorical ordial variable. Therefore, we should change the type of the variable as ordial variable.
+
+```{r}
+ames_train[,c('Overall.Qual','Overall.Cond')] <- lapply(ames_train[,c('Overall.Qual','Overall.Cond')], factor)
+str(ames_train)
+```
+
+Now we can see the data type of variable 'Overall.Qual' and 'Overall.Cond' has changed from integer to ordinal variable. 
+
+```{r}
+sort(colSums(is.na(ames_train)),decreasing = TRUE)
+```
+
+The reason why there are a lot of missing values in few variables is because some house have extra facilities available in their house while most of the other houses don't have. It might be interesting to see how those special facility influences the target variable which is price in this case.
+
+```{r}
+ames_train <- ames_train%>%
+  mutate(age = 2021 - Year.Built)
+ames_train$age <- as.integer(ames_train$age)
+ggplot(data = ames_train, aes(x = age, y = price))+
+  geom_point()+
+  geom_smooth(method = 'gam')+
+  labs(title = 'House Price Distribution Based on Age', x = 'Age (in Years)', 
+       y = 'Price (in USD)')+
+  theme(plot.title = element_text(size = 15, hjust = 0.5, face = 'bold'))
+```
+
+According to following graph, although it's not arguable that this trend is wrong, we can see the overall trend which shows the younger the house is, the more expensive it is. Although there are some outliers which is not near on the line, but most of the observations are positioned near the trend line.
+
+```{r}
+house0<-ggplot(data = ames_train, aes(x = age))+
+  geom_histogram(aes(y=..density..), colour="black", fill="white", bins = 30)+
+  geom_density(alpha=.2, fill="yellow")+
+  labs(title = "Age of Houses in dataset", x="Age (years)", y="Density (count)")+
+  theme(plot.title = element_text(face = 'bold', size = 12, hjust = 0.5))
+house1<-ggplot(data = ames_train, aes(y=age))+
+  geom_boxplot()+
+  labs(title ='Age of Houses by Boxplot', y = 'Age (years)')+
+  theme(plot.title = element_text(face = 'bold', size = 12, hjust = 0.5),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())+
+  scale_y_continuous(breaks=seq(0, 150, 30))
+grid.arrange(house0, house1, nrow = 1, top = 'Distribution of House Based on Ages')
+```
+
+Looking at the graphs, we can ssee that half of the houses are built less than 46 years ago and very few houses which age is more than 100 are existing.
+
+```{r}
+neighborhood<-ames_train %>% dplyr::select(Neighborhood, price) %>% group_by(Neighborhood)
+
+price0<-ggplot(data = neighborhood, aes(x=Neighborhood, y=price))+
+  geom_boxplot()+ 
+  labs(title = 'Box Plot of House Price on Each Neighborhoods', y = 'Price')+
+  theme(plot.title = element_text(face = 'bold', size = 15, hjust = 0.5))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+price0
+```
+
+I wanted to look whether the location determines the housing price, as the location is the key factor deciding housing price in general. As the size and all the other varaibles aren't controllable, we can see the overall price range of certain neighborhood using box plot, and we can see the range of housing price of each neighborhoods at one glance.
+
+```{r}
+neighborhood_v1<-ames_train%>%
+  dplyr::select(Neighborhood, price, area)%>%
+  mutate(price_per_area = price/area)%>%
+  group_by(Neighborhood)%>%
+  summarise(avg_ppa = mean(price_per_area))%>%
+  arrange(desc(avg_ppa))
+ggplot(data = neighborhood_v1, aes(x = Neighborhood, y = avg_ppa))+
+  geom_bar(stat="identity")+
+  labs(title = 'Price per Area on Each Neighborhood Area', y= 'Avg. Price per Area')+
+  theme(plot.title = element_text(face = 'bold', size = 15, hjust = 0.5),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+On the plot above, I was curious that the price range on some neighborhoods are very large, while the others aren't. Therefore, although we can see the median price to compare the overall housing price of each neighborhoods, I've done some data manipulation to calculate average USD per unit area. The basic assumption below this calculation is that, the area of house might vary, but the overall USD per area won't vary too much because they are in same neighborhood.
+
+I've plotted the calculated result by bar plot, and the interesing findings is some area which has high USD per area aren't the one which are positioned on the expensive neighborhood when comparing the prices with median values. Based on this observation, we can derieve two insights.
+
+1. Location shouldn't be the single variable to determmine the housing price, there are more variable which directly influences the housing price.
+2. Most of the houses in the neighborhoods with high USD per area which aren't positioned on the high rank on expensive neighborhoods must be small houses, resulting relatively low median house price based on their high USD per area value.
+
+As there are numerous variables which can determine the housing price, I would choose some outstanding features which might influence the housing price (the total area of the house, and whether or not the house contains some special facilities such as swimming pool), which I will explore further.
+
+```{r}
+neighborhood_v2 <- ames_train%>%dplyr::select(Neighborhood, area)%>%group_by(Neighborhood)
+
+area0<-ggplot(data = neighborhood_v2, aes(x = Neighborhood, y = area))+
+  geom_boxplot()+
+  labs(title = 'Box Plot of Area on Each Neighborhoods', y = 'Area')+
+  theme(plot.title = element_text(face = 'bold', size = 15, hjust = 0.5))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+area0
+```
+Based on my assumptions derieved on the previous calculation, my second assumption is proved by the following graph. Greens and Grn Hill, which has high USD per area but were position in the middle on the median price comparison have houses with relatively small area, and the range of house are are extremly narrow.
+
+
+```{r}
+price_area <- ggplot(data = ames_train, aes(x = area, y = price))+
+  geom_point()+
+  geom_smooth(method = 'lm')+
+  labs(title = 'Price vs Area', x = 'Area', y = 'USD')+
+  theme(plot.title = element_text(face = 'bold', size = 7, hjust = 0.5))
+price1<-price0+
+  theme(plot.title = element_text(face = 'bold', size = 7, hjust = 0.5),
+        axis.text.x = element_text(angle = 60, size = 5),
+        axis.title.x = element_text(size = 6))
+area1<-area0+
+  theme(plot.title = element_text(face = 'bold', size = 7, hjust = 0.5),
+        axis.text.x = element_text(angle = 60, size = 5),
+        axis.title.x = element_text(size = 6))
+  
+grid.arrange(price1, area1, price_area, nrow = 1, top ='House Price vs Area in Ames')
+```
+
+According to the two graphs shown above, and the scatter plot which shows correlation between housing price and area, looking at the median values of left two graphs, they go along pretty well, but it cannot catch if the price of the house goes too high. It is also shown in the scatterplot on the right side. The points are relatively well fitted in the small area, but when it goes to the larger area, the spread of the points get bigger. Based on this findings, we can assume there should be more features which can capture the hosing price more accurately if the area increases.
+
+My assummption is: If the area of the house increases, the house will include some luxurious facilities such as swimming pool, fireplaces, and etc. Therefore I will explore further on comparing prices of houses based on whether or not they have some special facilities. 
+
+```{r}
+pool <- ames_train%>%dplyr::select(price, Pool.QC) %>% 
+  mutate(pool=case_when(is.na(Pool.QC) == TRUE ~ 'No',TRUE ~ 'Yes'))
+misc.feature <- ames_train%>%dplyr::select(price, Misc.Feature)%>%
+  mutate(misc=case_when(is.na(Misc.Feature) == TRUE ~ 'No', TRUE ~ 'Yes'))
+
+fence <- ames_train%>%dplyr::select(price, Fence)%>% mutate(fence = case_when(is.na(Fence) == TRUE ~ 'No',
+                                                                       TRUE ~ 'Yes'))
+fireplace <- ames_train%>%dplyr::select(price, Fireplace.Qu)%>% 
+  mutate(fireplace = case_when(is.na(Fireplace.Qu) == TRUE ~ 'No',TRUE ~ 'Yes'))
+garage <- ames_train%>%dplyr::select(price, Garage.Qual)%>% 
+  mutate(garage = case_when(is.na(Garage.Qual) == TRUE ~ 'No', TRUE ~ 'Yes'))
+basement <- ames_train%>%dplyr::select(price, Bsmt.Qual)%>% mutate(basement = case_when(is.na(Bsmt.Qual) == TRUE ~ 'No', TRUE ~ 'Yes'))
+
+p0 <- ggplot(data = pool, aes(x=pool, y=price/100, group=pool))+
+  geom_boxplot()+
+  labs(title = 'No Pool vs. Have Pool Box Plot', x = 'Have Pool', y = 'Price (in 100 USD)')+
+  theme(plot.title = element_text(face = 'bold', size = 8, hjust = 0.5),
+        axis.title = element_text(size = 6))
+p1 <- ggplot(data = misc.feature, aes(x=misc, y=price/100, group=misc))+
+  geom_boxplot()+
+  labs(title = 'No Misc vs. Have Misc Box Plot', x = 'Have Misc', y = 'Price (in 100 USD)')+
+  theme(plot.title = element_text(face = 'bold', size = 8, hjust = 0.5),
+        axis.title = element_text(size = 6))
+p2 <- ggplot(data = fence, aes(x=fence, y=price/100, group=fence))+
+  geom_boxplot()+
+  labs(title = 'No Fence vs. Have Fence Box Plot', x = 'Have Fence', y = 'Price (in 100 USD)')+
+  theme(plot.title = element_text(face = 'bold', size = 8, hjust = 0.5),
+        axis.title = element_text(size = 6))
+p3 <- ggplot(data = fireplace, aes(x=fireplace, y=price/100, group=fireplace))+
+  geom_boxplot()+
+  labs(title = 'No Fireplace vs. Have Fireplace Box Plot', x = 'Have Fireplace', 
+       y = 'Price (in 100 USD)')+
+  theme(plot.title = element_text(face = 'bold', size = 8, hjust = 0.5),
+        axis.title = element_text(size = 6))
+p4 <- ggplot(data = garage, aes(x=garage, y=price/100, group=garage))+
+  geom_boxplot()+
+  labs(title = 'No Garage vs. Have Garage Box Plot', x = 'Have Garage', y = 'Price (in 100 USD)')+
+  theme(plot.title = element_text(face = 'bold', size = 8, hjust = 0.5),
+        axis.title = element_text(size = 6))
+p5 <- ggplot(data = basement, aes(x=basement, y=price/100, group=basement))+
+  geom_boxplot()+
+  labs(title = 'No Basement vs. Have Basement Box Plot', x = 'Have Basement', 
+       y = 'Price (in 100 USD)')+
+  theme(plot.title = element_text(face = 'bold', size = 8, hjust = 0.5),
+        axis.title = element_text(size = 6))
+
+grid.arrange(p0,p1,p2,p3,p4,p5, nrow = 2, top="Comparinng Boxplot with/without Features")
+```
+
+Looking at the boxplots comparing whether the house have certain facilities or not. There are few findings in from this graph:
+
+1. The feature which is definitely luxurious (swimming pool & fire place) are actually one of the factor that more expensive houses tend to have, especially for the swimming pool. However, due to the lack of sample size of houses which have swimming pools, the result might be different if more sample are collected.
+
+2. Although there were some features that a lot of houses don't have but aren't really sure whether or not it's luxurious, those feature shows that not only they aren't the features which expensive houses have, but also houses with these features have lower median than houses without these features.
+
+3. The last two features (Garage and Basement) are the features that most of the houses have, which is different from first four features which small number of houses only have those features. According to the boxplot, houses with these features has higher median than those without these features. The range of the boxplot for the houses without these features are relatively small, indicating there are high chance that having these features can be indicators for the houses' price.
+
+```{r}
+garage_v1 <- ames_train%>%dplyr::select(price, Garage.Area)%>%
+  mutate(area = case_when(is.na(Garage.Area)==TRUE~0,
+                          TRUE ~ as.numeric(Garage.Area)))
+ggplot(data = garage_v1, aes(x=area, y=log(price)))+
+  geom_point()+
+  geom_smooth(method = 'lm')
+```
+
+* * *
+
+## Part 2 - Development and assessment of an initial model, following a semi-guided process of analysis
+
+
+Explained in the EDA process before, the predictor value that I'll implement for my model is area, Neighborhood,
+Pool.QC, Fireplace.Qu, Bedroom.AbvGr, Year.Built, Overall.Qual, Overall.Cond, Yr.Sold, and Garage.Area.
+
+For the y value, which is price in this model, I will use log transformation as the more expensive the house is, the model tends to diverge, so I'll use log transformation to make those points to fit better in model.
+
+The explanation of why I chose these variable is because of below reasons:
+
+area: The larger the house is, the more expensive it is (explained in EDA process).
+
+Neighborhood: The location matterss on the housing price (explained in EDA process).
+
+Pool.QC: Expensive house tends to have swimming pool (explained in EDA process).
+
+Fireplace.Qu: Expensive house tends to have fireplace (explained in EDA process).
+
+Bedroom.AbvGr: Number of bedroom can sometiems boost up the price, or decrease the price when the area of the house surpasses certain area unit, so it's worth including into the model.
+
+Year.Built: The age of the house matters (explained in EDA process), because age of the house changes every year, I'll include Year.Built for the model.
+
+Overall.Qual & Overall.Cond: Overall Quality and Overall Condition of the house can be the key factors of determining the housing price.
+
+Yr.Sold: Due to the economic issue(economic crisis and inflation), if the price is evaluated at the time when the house was sold, then the year sold might be the key factor of determining the housing price.
+
+Garage.Area.: Whether the house have garage or not matters on the housing price (explained in EDA process), and there is the correlation between area of garage and price, as the area of garage increases, the capacity for cars.  
+```{r}
+ames_train<-ames_train%>%
+  mutate(yes_pool = case_when(is.na(Pool.QC) == TRUE ~ 0,
+                              TRUE ~ 1),
+         yes_fireplace = case_when(is.na(Fireplace.Qu) == TRUE ~ 0,
+                                   TRUE ~ 1))
+ames_train <- ames_train%>%mutate(Garage.Area = replace_na(Garage.Area,0))
+lm_dataframe <- data.frame(log(ames_train$price),ames_train$area,ames_train$Neighborhood,
+                           log(ames_train$yes_pool+1),log(ames_train$yes_fireplace+1),ames_train$Bedroom.AbvGr,
+                           ames_train$Year.Built,ames_train$Overall.Qual,ames_train$Overall.Cond,
+                           log(ames_train$Full.Bath+1),log(ames_train$Garage.Area+1))
+colSums(is.na(lm_dataframe))
+```
+Make sure that any data in the selected features don't have NA values.
+
+```{r fit_model}
+
+initial_model <- lm(log(price) ~ area + Neighborhood + log(yes_pool+1) + log(yes_fireplace+1) + Bedroom.AbvGr + Year.Built + Overall.Qual + Overall.Cond + log(Full.Bath+1) + log(Garage.Area+1), data = ames_train)
+```
+```{r}
+summary(initial_model)
+```
+
+
+According to the Initial Model and Modified Model, the Initial Model shows the lower RMSE, but although Modified Model has higher RMSE, due to the lower computing power, it can be better to use modified model.
+* * *
+
+### Section 2.2 Model Selection
+
+I'll start to modify model by using backward elimination model with AIC values.
+
+```{r}
+modified_model<-stepAIC(initial_model, direction = 'backward', k=2)
+```
+
+```{r}
+summary(modified_model)
+```
+
+* * *
+
+### Section 2.3 Initial Model Residuals
+One way to assess the performance of a model is to examine the model's residuals. I'll look into the residuals in this model
+
+* * *
+
+NOTE: Write your written response to section 2.3 here. Delete this note before you submit your work.
+
+```{r model_resid}
+random_num <- sample(1:nrow(ames_train), 100, replace = F)
+test_set <- ames_train[random_num,]
+real_price <- test_set$price
+pred_initial <- exp(predict(initial_model, test_set))
+pred_modified <- exp(predict(modified_model, test_set))
+
+initial_real_resid <- pred_initial-real_price
+initial_real_resid
+```
+```{r}
+modified_real_resid <- pred_modified-real_price
+modified_real_resid
+```
+
+* * *
+
+### Section 2.4 Initial Model RMSE
+
+You can calculate it directly based on the model output. Be specific about the units of your RMSE (depending on whether you transformed your response variable).
+
+* * *
+
+NOTE: Write your written response to section 2.4 here. Delete this note before you submit your work.
+
+
+```{r model_rmse}
+initial_RMSE <- sqrt(mean(initial_real_resid^2))
+modified_RMSE <- sqrt(mean(modified_real_resid^2))
+
+initial_RMSE
+```
+```{r}
+modified_RMSE
+```
+
+* * *
+
+### Section 2.5 Overfitting 
+
+The process of building a model generally involves starting with an initial model (as you have done above), identifying its shortcomings, and adapting the model accordingly. This process may be repeated several times until the model fits the data reasonably well. However, the model may do well on training data but perform poorly out-of-sample (meaning, on a dataset other than the original training data) because the model is overly-tuned to specifically fit the training data. This is called “overfitting.” To determine whether overfitting is occurring on a model, compare the performance of a model on both in-sample and out-of-sample data sets. To look at performance of your initial model on out-of-sample data, you will use the data set `ames_test`.
+
+```{r loadtest, message = FALSE}
+load("ames_test.Rdata")
+ames_test<-ames_test%>%
+  mutate(yes_pool = case_when(is.na(Pool.QC) == TRUE ~ 0,
+                              TRUE ~ 1),
+         yes_fireplace = case_when(is.na(Fireplace.Qu) == TRUE ~ 0,
+                                   TRUE ~ 1))
+ames_test <- ames_test%>%mutate(Garage.Area = replace_na(Garage.Area,0))
+```
+
+
+```{r}
+levels(ames_train$Neighborhood)
+```
+
+```{r}
+levels(ames_test$Neighborhood)
+```
+
+Because there are level Landmrk which wasn't in training set but in test set, I've thoght of finding nearby neighbors and calculate the mean price of those area, however, the neighborhood Landmrk isn't existing. Therefore I will just drop the observation in order to caluculate the housing price.
+
+
+```{r}
+match('Landmrk',ames_test$Neighborhood)
+ames_test<-ames_test[-205,]
+ames_test[,c('Overall.Qual','Overall.Cond')] <- lapply(ames_test[,c('Overall.Qual','Overall.Cond')], factor)
+ames_test<-ames_test%>%filter(Exter.Cond != 'Po')
+```
+
+
+Use your model from above to generate predictions for the housing prices in the test data set.  Are the predictions significantly more accurate (compared to the actual sales prices) for the training data than the test data?  Why or why not? Briefly explain how you determined that (what steps or processes did you use)?
+
+* * *
+
+NOTE: Write your written response to section 2.5 here. Delete this note before you submit your work.
+
+```{r initmodel_test}
+initial_pred_test <- predict(initial_model, ames_test)
+initial_test_resid <- exp(initial_pred_test) - ames_test$price
+initial_test_rmse <- sqrt(mean(initial_test_resid^2))
+initial_test_rmse
+```
+```{r}
+initial_RMSE
+```
+
+```{r}
+modified_pred_test <- predict(modified_model, ames_test)
+modified_test_resid <- exp(modified_pred_test) - ames_test$price
+modified_test_rmse <- sqrt(mean(modified_test_resid^2))
+modified_test_rmse
+```
+```{r}
+modified_RMSE
+```
+
+Supposedly, the RMSE of the train set should be lower than test set, but due to the random chance, the RMSE of test set is lower. I've calculated the RMSE as the metrics because it's a good indicator if all the observation is well fitted on the linear model. The modified model yeilds better performance in this case.
+
+* * *
+
+## Part 3 Development of a Final Model
+
+
+### Section 3.1 Final Model
+
+Provide the summary table for your model.
+
+* * *
+```{r}
+str(ames_train)
+```
+```{r}
+ames_train <- ames_train%>%filter(Exter.Cond != 'Po')
+```
+
+As train model doesn't contain `Exter.Cond == 'Po'`, if the test set has this model, it's impossible to run the model. Therefore I decided to filter the data for ease.
+
+```{r}
+final_model <- lm(log(price) ~ area + Neighborhood + log(yes_pool+1) + log(yes_fireplace+1) + Bedroom.AbvGr + Year.Built + Overall.Qual + Overall.Cond + log(Full.Bath+1) + log(Garage.Area+1) + Lot.Area + Land.Slope + House.Style + Central.Air + X1st.Flr.SF + X2nd.Flr.SF + Kitchen.AbvGr + Total.Bsmt.SF + Exter.Qual + Exter.Cond, data = ames_train)
+
+final_modified<-stepAIC(final_model, direction = 'backward', k=2)
+```
+
+```{r}
+final_modified_predict_RMSE <- sqrt(mean((exp(predict(final_modified, ames_test))-ames_test$price)^2))
+final_modified_predict_RMSE
+```
+
+```{r}
+final_model2 <- lm(log(price) ~ area + Neighborhood + yes_pool + yes_fireplace + Bedroom.AbvGr + Year.Built + Overall.Qual + Overall.Cond + Full.Bath + Garage.Area + Lot.Area + Land.Slope + House.Style + Central.Air + X1st.Flr.SF + X2nd.Flr.SF + Kitchen.AbvGr + Total.Bsmt.SF + Exter.Qual + Exter.Cond, data = ames_train)
+
+final2_modified<-stepAIC(final_model, direction = 'backward', k=2)
+
+final2_modified_predict_RMSE <- sqrt(mean((exp(predict(final2_modified, ames_test))-ames_test$price)^2))
+final2_modified_predict_RMSE
+```
+
+```{r model_playground}
+plot(final_model2)
+```
+```{r model_inter}
+ames_train_normal <- ames_train%>%
+  filter(Sale.Condition == "Normal")
+ames_test_normal <- ames_test%>%
+  filter(Sale.Condition == "Normal",
+         House.Style != '2.5Fin')
+```
+
+```{r}
+final_model3 <- lm(log(price) ~ area + Neighborhood + log(yes_pool+1) + log(yes_fireplace+1) + Bedroom.AbvGr + Year.Built + Overall.Qual + Overall.Cond + log(Full.Bath+1) + log(Garage.Area+1) + Lot.Area + Land.Slope + House.Style + Central.Air + X1st.Flr.SF + X2nd.Flr.SF + Kitchen.AbvGr + Total.Bsmt.SF + Exter.Qual + Exter.Cond, data = ames_train_normal)
+
+final3_modified<-stepAIC(final_model3, direction = 'backward', k=2)
+```
+
+```{r}
+test_set_normal <- test_set%>%filter(Sale.Condition == "Normal")
+
+final3_modified_predict_RMSE_train <- sqrt(mean((exp(predict(final3_modified, test_set_normal))-
+                                                   test_set_normal$price)^2))
+final3_modified_predict_RMSE_train
+```
+
+* * *
+
+### Section 3.2 Transformation
+
+* * *
+
+I decided to log transform price, because the range of the price is very large and I thought it could be better if we log transform them. I believe log transforming others won't significantly influence the result, but still it might be slightly. But I would prefer not using if it's not significant because log transforming means more computation.
+
+* * *
+
+### Section 3.3 Variable Interaction
+
+* * *
+
+I decided to use number of bedroom, area, swimming pool, number of kitchen, garage area and etc. The number of bedroom and kitchen, swimming pool, garage area are all the factors which decide the area of house; if there are more bedrooms, swimming pool, and larger garage, we assume the house must be large enough to include all these places.
+
+In this case, the size of the house won't matter too much, but which facilities are in the house will matter. If total area surpasses a certain threshold, then some variable will be a negative factor for prices while the others will be positive factors for prices.
+
+* * *
+
+### Section 3.4 Variable Selection
+
+* * *
+
+I believed the more the variables are, the better the model will predict the result. So my plan was to put the variables as much as possible and then eliminate the unneccessary variables by running backward elimination. Because I don't have a solid domain knowledge which factors affects house prices in Ames, I believe this is the safe strategy to find the optimal model.
+
+Also, I've limited the observation to which Sales.Cond == 'normal'. It is because there are high possibility of outlier if sales condition is not normal, and also most of the observation has normal sales condition.
+
+* * *
+
+### Section 3.5 Model Testing
+
+* * *
+
+When testing the performance of the model based on the trained dataset, there might be a possibility of overfitting, which is not an ideal outcome when building a good predictive model. It is because we want a model which can accurately predict the outcome in any circumstances, but when the model starts to overfit, there is a high possibility of model inaccurately predicting the outcome value. That's why we use out of sample data to check if the model is overfitting. Fortunately in this case, the model is not overfitting, looking at the output where the RMSE of testing datset is slightly higher than RMSE of training dataset.
+
+* * *
+
+## Part 4 Final Model Assessment
+
+### Section 4.1 Final Model Residual
+
+* * *
+```{r}
+plot(final_model3)
+```
+
+The plots of the model seems to be fine, except for the few outliers which affects the whole model. But beside of this concern, the model seems to be fair.
+* * *
+
+### Section 4.2 Final Model RMSE
+
+For your final model, calculate and briefly comment on the RMSE.
+
+* * *
+```{r}
+final3_modified_predict_RMSE_test <- sqrt(mean((exp(predict(final3_modified, ames_test_normal))-
+                                             ames_test_normal$price)^2))
+final3_modified_predict_RMSE_test
+```
+```{r}
+final3_modified_predict_MAE <- mean(abs(exp(predict(final3_modified, ames_test_normal))-ames_test_normal$price))
+final3_modified_predict_MAE
+```
+
+The RMSE is pretty low compared to the all the model in this final project and other model I've run in previous project. I believe although calculating housing price not only requires more variables, but also might need advanced machine learning technology to minimize the loss. Looking the RMSE and AME(Mean Absolute Error), the outliers are affecting the model, so calculating more variables in account with more sophiscated model might minimize the loss.
+
+* * *
+
+### Section 4.3 Final Model Evaluation
+
+What are some strengths and weaknesses of your model?
+
+* * *
+
+Compared to the initial model which only contains 10 variables (and those variables are even chosen by basic instinct which isn't really accurate), the final model is created by containing most of the quantified variables and then eliminated it by using backward elimination. I guess the strength and weakness arise at this moment.
+
+The strength of the model is that compared to any other model created in this final project, the rmse of the final model when the test set was fed was the lowest, indicating that the final model has the best performance on model prediction.
+
+The weakness of the model might be as we take more variables in account, the computing power will be heavier than any other models. Moreover, because the model is a linear model, it's very robust on the outliers, which can be seen in the residuals vs fit plot; there are some outliers which values are very different from predicted values, but the trend line is almost a straight line at 0.
+* * *
+
+### Section 4.4 Final Model Validation
+
+Testing your final model on a separate, validation data set is a great way to determine how your model will perform in real-life practice. 
+
+You will use the “ames_validation” dataset to do some additional assessment of your final model. Discuss your findings, be sure to mention:
+* What is the RMSE of your final model when applied to the validation data?  
+* How does this value compare to that of the training data and/or testing data?
+* What percentage of the 95% predictive confidence (or credible) intervals contain the true price of the house in the validation data set?  
+* From this result, does your final model properly reflect uncertainty?
+
+```{r loadvalidation, message = FALSE}
+load("ames_validation.Rdata")
+```
+
+* * *
+
+NOTE: Write your written response to section 4.4 here. Delete this note before you submit your work.
+
+```{r model_validate}
+ames_validation_normal <- ames_validation%>%
+  filter(Sale.Condition=='Normal', House.Style != '2.5Fin', Exter.Cond != 'Po')%>%
+  mutate(yes_pool = case_when(is.na(Pool.QC) == TRUE ~ 0,
+                              TRUE ~ 1),
+         yes_fireplace = case_when(is.na(Fireplace.Qu) == TRUE ~ 0,
+                                   TRUE ~ 1),
+         Garage.Area = replace_na(Garage.Area,0))
+ames_validation_normal[,c('Overall.Qual','Overall.Cond')] <- lapply(ames_validation_normal[,c('Overall.Qual','Overall.Cond')], factor)
+
+
+ames_validation_normal_RMSE <- sqrt(mean((exp(predict(final3_modified, ames_validation_normal))-
+                                            ames_validation_normal$price)^2))
+ames_validation_normal_RMSE
+```
+* What is the RMSE of your final model when applied to the validation data?  
+184319.3
+```{r}
+final3_modified_predict_RMSE_train
+```
+```{r}
+final3_modified_predict_RMSE_test
+```
+
+* How does this value compare to that of the training data and/or testing data?
+RMSE Training Data: 15973.29
+RMSE Test Data: 20050.96
+RMSE Validation Data: 19062.41
+
+Validation data has the loweset RMSE
+
+* What percentage of the 95% predictive confidence (or credible) intervals contain the true price of the house in the validation data set?  
+```{r}
+# Predict prices
+predict.final3 <- exp(predict(final3_modified, ames_validation_normal, interval = "prediction"))
+
+# Calculate proportion of observations that fall within prediction intervals
+coverage.prob.final3 <- mean(ames_validation_normal$price > predict.final3[,"lwr"] &
+                            ames_validation_normal$price < predict.final3[,"upr"])
+coverage.prob.final3
+```
+95.125% in the output of the model contains the true price of the house in the validation data set. 
+
+* From this result, does your final model properly reflect uncertainty?
+Yes it does.
+
+* * *
+
+## Part 5 Conclusion
+
+* * *
+```{r}
+range_value<-range(ames_validation_normal$price)[2]-range(ames_validation_normal$price)[1]
+ames_validation_normal_RMSE/range_value
+```
+
+Because the RMSE value is high due to the range of the price is high as well, I wasn't sure whether this RMSE value is big or small. Therefore I've divided RMSE over total range of the price. The value of the adjusted RMSE is 0.03469047, which is very small in a scale to 0 to 1.
+
+I believe, although I'm not certain that this model is the best model among all possible combinations of variables and models, but this model predicts more accurate result that most of the possible models. I learned that the best strategy when you don't have enough domain knowledge is to feed as many variables as I can include and then let the model learn and distinguish which model is the best. Also I've learn in which case I remove certain variable, filter the variable based on the human context, and run the statistical model based on the given data.
+
+
+* * *
